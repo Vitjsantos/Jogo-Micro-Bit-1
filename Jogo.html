@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Micro Mundo — Movimento Contínuo</title>
+<style>
+body{margin:0;font-family:Arial,sans-serif;background:#111827;color:#f9fafb;display:flex;justify-content:center}
+.app{width:min(1100px,96vw);padding:20px}
+h1{margin:0 0 8px}
+.sub{color:#9ca3af;margin-bottom:16px}
+.bar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:center}
+button{border:0;border-radius:8px;padding:11px 16px;font-weight:bold;cursor:pointer;transition:background 0.2s}
+#connect{background:#fbbf24;color:#111827}
+#connect:hover{background:#f59e0b}
+.secondary{background:#374151;color:white}
+.secondary:hover{background:#4b5563}
+.status{padding:10px 14px;border-radius:8px;background:#1f2937;font-size:14px}
+
+canvas{display:block;width:100%;height:auto;background:#dfe7df;border-radius:12px;border:2px solid #374151}
+
+.devices-panel{margin-top:14px;background:#1f2937;border-radius:10px;padding:14px}
+.devices-title{font-size:14px;font-weight:bold;color:#9ca3af;margin-bottom:10px}
+.devices-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.device-card{background:#111827;border-radius:8px;padding:10px;border-left:5px solid #22c55e;display:flex;justify-content:space-between;align-items:center}
+.device-info{font-size:13px}
+.device-info strong{display:block;font-size:15px;color:#f9fafb}
+
+pre{height:120px;overflow:auto;background:#030712;padding:10px;border-radius:8px;color:#a7f3d0;margin-top:14px;font-size:13px}
+</style>
+</head>
+<body>
+<div class="app">
+<h1>🌎 Micro Mundo — Movimentação Contínua</h1>
+<div class="sub">Mantenha o micro:bit inclinado para se mover continuamente.</div>
+
+<div class="bar">
+<button id="connect">🔌 Conectar micro:bit</button>
+<button class="secondary" id="reset">Reiniciar Mundo</button>
+<div class="status" id="status">Desconectado</div>
+</div>
+
+<canvas id="world" width="1000" height="600"></canvas>
+
+<div class="devices-panel">
+<div class="devices-title">JOGADORES NO MUNDO DIGITAL</div>
+<div class="devices-grid" id="devicesGrid">
+  <div style="color:#6b7280;font-size:13px">Nenhum micro:bit conectado.</div>
+</div>
+</div>
+
+<pre id="log">Mundo iniciado...</pre>
+</div>
+
+<script>
+const canvas=document.getElementById("world"),ctx=canvas.getContext("2d");
+const statusEl=document.getElementById("status"),logEl=document.getElementById("log");
+const devicesGrid=document.getElementById("devicesGrid");
+
+const PALETA_CORES = ["#22c55e", "#3b82f6", "#ec4899", "#a855f7", "#06b6d4", "#f97316", "#eab308"];
+
+const mundo={
+  largura:100,altura:100,
+  obstaculos:[
+    {x:20,y:15,largura:18,altura:8},{x:55,y:12,largura:25,altura:7},
+    {x:35,y:30,largura:8,altura:28},{x:62,y:32,largura:20,altura:8},
+    {x:15,y:60,largura:25,altura:9},{x:55,y:55,largura:8,altura:25},
+    {x:72,y:72,largura:18,altura:8}
+  ],
+  recursos:[
+    {id:1,x:12,y:28,valor:20,ativo:true},{id:2,x:48,y:18,valor:20,ativo:true},
+    {id:3,x:88,y:25,valor:20,ativo:true},{id:4,x:50,y:48,valor:20,ativo:true},
+    {id:5,x:25,y:82,valor:20,ativo:true},{id:6,x:88,y:88,valor:20,ativo:true}
+  ]
+};
+
+const seres = {};
+let totalSeresCriados = 0;
+const raioSer = 2.5;
+// Passo reduzido para garantir movimentação fluida a ~20 comandos/seg
+const passo = 0.8; 
+let port = null, reader = null;
+
+function log(s){logEl.textContent=(logEl.textContent+"\n"+s).slice(-5000);logEl.scrollTop=logEl.scrollHeight}
+function tx(x){return x/mundo.largura*canvas.width}
+function ty(y){return y/mundo.altura*canvas.height}
+
+function obterOuCriarSer(serId) {
+  if (!seres[serId]) {
+    totalSeresCriados++;
+    const colorIndex = (totalSeresCriados - 1) % PALETA_CORES.length;
+    seres[serId] = {
+      id: serId,
+      x: 10 + (totalSeresCriados * 7) % 80,
+      y: 10 + (totalSeresCriados * 7) % 80,
+      energia: 100,
+      objetosColetados: 0,
+      estado: "Explorando",
+      cor: PALETA_CORES[colorIndex]
+    };
+    log(`✨ Novo jogador registrado: [${serId}]`);
+  }
+  return seres[serId];
+}
+
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle="#dfe7df";ctx.fillRect(0,0,canvas.width,canvas.height);
+  
+  // Grid
+  ctx.strokeStyle="rgba(0,0,0,.10)";ctx.lineWidth=1;
+  for(let x=0;x<=100;x+=5){ctx.beginPath();ctx.moveTo(tx(x),0);ctx.lineTo(tx(x),canvas.height);ctx.stroke()}
+  for(let y=0;y<=100;y+=5){ctx.beginPath();ctx.moveTo(0,ty(y));ctx.lineTo(canvas.width,ty(y));ctx.stroke()}
+
+  // Obstáculos
+  for(const o of mundo.obstaculos){
+    ctx.fillStyle="#374151";ctx.fillRect(tx(o.x),ty(o.y),tx(o.largura),ty(o.altura));
+    ctx.strokeStyle="#111827";ctx.lineWidth=3;ctx.strokeRect(tx(o.x),ty(o.y),tx(o.largura),ty(o.altura));
+  }
+
+  // Recursos
+  for(const r of mundo.recursos) if(r.ativo){
+    ctx.beginPath();ctx.arc(tx(r.x),ty(r.y),9,0,Math.PI*2);ctx.fillStyle="#f59e0b";ctx.fill();
+    ctx.strokeStyle="#92400e";ctx.lineWidth=2;ctx.stroke();
+    ctx.fillStyle="#111827";ctx.font="bold 11px Arial";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText("+",tx(r.x),ty(r.y));
+  }
+
+  // Jogadores
+  Object.values(seres).forEach(ser => {
+    ctx.beginPath();ctx.arc(tx(ser.x),ty(ser.y),18,0,Math.PI*2);
+    ctx.fillStyle=ser.cor;ctx.fill();
+    ctx.strokeStyle="#111827";ctx.lineWidth=3;ctx.stroke();
+    
+    ctx.fillStyle="#fff";ctx.font="bold 12px Arial";ctx.textAlign="center";ctx.textBaseline="middle";
+    ctx.fillText(ser.id,tx(ser.x),ty(ser.y));
+  });
+
+  atualizarInterface();
+}
+
+function atualizarInterface() {
+  const lista = Object.values(seres);
+  
+  if (lista.length === 0) {
+    devicesGrid.innerHTML = `<div style="color:#6b7280;font-size:13px">Nenhum jogador ativo no momento.</div>`;
+    return;
+  }
+
+  devicesGrid.innerHTML = "";
+  lista.forEach(ser => {
+    const card = document.createElement("div");
+    card.className = "device-card";
+    card.style.borderLeftColor = ser.cor;
+    card.innerHTML = `
+      <div class="device-info">
+        <strong>${ser.id}</strong>
+        X: ${Math.round(ser.x)} | Y: ${Math.round(ser.y)}<br>
+        Energia: ${Math.round(ser.energia)}% | Itens: ${ser.objetosColetados}<br>
+        <span style="color:#9ca3af">${ser.estado}</span>
+      </div>
+    `;
+    devicesGrid.appendChild(card);
+  });
+}
+
+function colisao(x,y){
+  for(const o of mundo.obstaculos){
+    const px=Math.max(o.x,Math.min(x,o.x+o.largura)),py=Math.max(o.y,Math.min(y,o.y+o.altura));
+    const dx=x-px,dy=y-py;
+    if(Math.sqrt(dx*dx+dy*dy)<raioSer)return true;
+  }
+  return false;
+}
+
+function coletar(ser){
+  for(const r of mundo.recursos) if(r.ativo){
+    const dx=ser.x-r.x,dy=ser.y-r.y;
+    if(Math.sqrt(dx*dx+dy*dy)<=raioSer+2.5){
+      r.ativo=false;ser.energia=Math.min(100,ser.energia+r.valor);ser.objetosColetados++;
+      ser.estado="Recurso coletado!";log(`${ser.id} coletou energia.`);
+      setTimeout(()=>{if(ser.estado==="Recurso coletado!")ser.estado="Explorando"},700);
+    }
+  }
+}
+
+function move(ser,dx,dy){
+  if(ser.energia<=0){ser.estado="Sem energia";return}
+  const nx=Math.max(0,Math.min(100,ser.x+dx)),ny=Math.max(0,Math.min(100,ser.y+dy));
+  if(colisao(nx,ny)){ser.estado="Bloqueado!";draw();return}
+  ser.x=nx;ser.y=ny;
+  // Perda de energia proporcional por passo pequeno
+  ser.energia=Math.max(0,ser.energia-0.05);
+  coletar(ser);
+  if(ser.energia<=0)ser.estado="Sem energia";
+  else if(!ser.estado.includes("coletado"))ser.estado="Explorando";
+  draw();
+}
+
+function action(ser){
+  if(ser.energia<=0){ser.estado="Sem energia";return}
+  ser.estado="Ação!";log(`${ser.id} realizou uma ação.`);
+  setTimeout(()=>{if(ser.estado==="Ação!")ser.estado="Explorando"},500);
+}
+
+function processarComando(rawMsg) {
+  let serId = "Ser 01";
+  let cmd = rawMsg;
+
+  // Se a mensagem vier no formato "P01:UP"
+  if (rawMsg.includes(":")) {
+    const partes = rawMsg.split(":");
+    serId = partes[0].trim();
+    cmd = partes[1].trim();
+  }
+
+  const ser = obterOuCriarSer(serId);
+
+  if(cmd==="LEFT") move(ser,-passo,0);
+  else if(cmd==="RIGHT") move(ser,passo,0);
+  else if(cmd==="UP") move(ser,0,-passo);
+  else if(cmd==="DOWN") move(ser,0,passo);
+  else if(cmd==="ACTION") action(ser);
+}
+
+async function connect(){
+  if(!("serial" in navigator)){alert("Navegador sem suporte a Web Serial");return}
+  try{
+    port = await navigator.serial.requestPort();
+    await port.open({baudRate:115200});
+    statusEl.textContent = "Conectado 🟢";
+    log("Conexão Serial estabelecida.");
+    readLoop();
+  }catch(e){
+    log("Erro na conexão: "+e.message);
+  }
+}
+
+async function readLoop(){
+  let buffer = "";
+  const decoder = new TextDecoderStream();
+  port.readable.pipeTo(decoder.writable);
+  reader = decoder.readable.getReader();
+
+  try{
+    while(true){
+      const {value,done} = await reader.read();
+      if(done) break;
+      buffer += value;
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+      for(const line of lines){
+        const msg = line.trim();
+        if(!msg) continue;
+        processarComando(msg);
+      }
+    }
+  }catch(e){
+    statusEl.textContent = "Desconectado 🔴";
+    log("Conexão encerrada.");
+  }
+}
+
+function reset(){
+  Object.values(seres).forEach(ser => {
+    ser.energia = 100;
+    ser.objetosColetados = 0;
+    ser.estado = "Explorando";
+  });
+  for(const r of mundo.recursos) r.ativo = true;
+  log("Mundo reiniciado.");
+  draw();
+}
+
+document.getElementById("connect").addEventListener("click",connect);
+document.getElementById("reset").addEventListener("click",reset);
+draw();
+</script>
+</body>
+</html>
